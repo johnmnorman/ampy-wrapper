@@ -2,6 +2,7 @@
 
 import subprocess
 import datetime
+import os
 
 proc = ["ampy", "--port", "/dev/ttyACM0"]
 
@@ -20,6 +21,212 @@ help = {
         "quit": ["quit", "Quits the program. You can also type `exit` or just `q`."],
         "help": ["help [COMMAND]", "Get help on a particular command."]
         }
+
+class Program:
+    def __init__(self, port="/dev/ttyACM0", editor="nvim"):
+        self.proc = ["ampy", "--port", port]
+        self.editor = editor
+        self.history = []
+        self.cmd = None
+        self.params = None
+        self.result = None
+        self.repeat = False
+
+    def repl(self):
+        '''Takes input, parses it, calls appropriate functions, loops.'''
+        if self.repeat == True:
+            self.cmd, self.params = self.history[-1]
+            self.repeat = False
+        else:
+            i = input("ampy >>> ")
+            tokens = i.split(' ')
+            self.cmd = tokens[0]
+            self.params = tokens[1:]
+
+        c = self.cmd
+        p = self.params
+        if c == "help":
+            if len(p) == 1:
+                print_help(p[0])
+            else:
+                print_help("invalid")
+        elif c == "ls":
+            print("Querying device...")
+            if len(p) == 1:
+                self.result = self.call_ampy(["ls", p[0]])
+            elif len(p) > 1:
+                print_help("ls")
+            else:
+                self.result = self.call_ampy(["ls"])
+        elif c == "cat":
+            if len(p) == 1:
+                print("Querying device...")
+                self.result = subprocess.run(self.proc + ["get", p[0]],
+                                             stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE,
+                                             text=True,
+                                             check=True)
+                more = subprocess.run(["less"], input=self.result.stdout, text=True)
+            else:
+                print_help("cat")
+        elif c == "pull":
+            if len(p) == 1 or len(p) == 2:
+                fin = fout = p[0]
+                if len(p) == 2:
+                    fout = p[1]
+                print("Querying device...")
+                self.result = self.call_ampy(["get", p[0]],
+                                         pipe_stdout=True)
+                try:
+                    with open(fout, 'x') as f:
+                        f.write(self.result.stdout)
+                        print("Saved {} to computer as {}...".format(fin, fout))
+                except FileExistsError:
+                    print(f"File not written: {fout} already exists on computer.")
+            else:
+                print_help("push")
+        elif c == "push":
+            if len(p):
+                file = p[0]
+                rename = p[-1]
+                print("Querying device...")
+                result = subprocess.run(proc + ["put", file, rename],
+                                    check=True,
+                                    text=True,
+                                    stderr=subprocess.PIPE)
+                print("Uploaded {} to device as {} ...".format(file, rename))
+            else:
+                print_help("push")
+        elif c == "reset":
+            print("Sending a soft reset signal to device...")
+            self.result = self.call_ampy(["reset"])
+            print("Done.")
+        elif c == "dev":
+            if len(p) == 0:
+                print(f"Pico port:  {self.proc[-1]}")
+            elif len(p) == 1:
+                self.proc = ["ampy", "--port", p[0]]
+                print(f"Changed port to: {self.proc[-1]}")
+            else:
+                print_help("dev")
+        elif c == "mkdir":
+            if len(p) == 1:
+                dir = p[0]
+                print("Querying device...")
+                self.result = self.call_ampy(["mkdir", dir])
+                print("Directory created.")
+            else:
+                print_help("mkdir")
+        elif c == "rm":
+            if len(p) == 1:
+                file = p[0]
+                print("Querying device...")
+                self.result = self.call_ampy(["rm", file])
+                print("File deleted.")
+            else:
+                print_help("rm")
+        elif c == "rmdir":
+            if len(p) == 1:
+                print("WARNING: This will delete the directory and everything in it!")
+                warn = input("Continue? (y/N) >> ")
+                if warn in ["y", "yes", "Y", "YES"]:
+                    file = p[0]
+                    print("Querying device...")
+                    self.result = self.call_ampy(["rmdir", file])
+                    print("Directory deleted.")
+            else:
+                print_help("rmdir")
+        elif c == "repl":
+            print("Connecting interactively to device. (Requires tio)")
+            self.result = subprocess.run(["tio", proc[-1]],
+                                    check=True,
+                                    stderr=subprocess.PIPE)
+            print("Exiting REPL mode... ")
+        elif c == "run":
+            if len(p) == 1:
+                localfile = p[0]
+                self.result = self.run(localfile)
+                
+        elif c == "lsl":
+            d = os.getcwd()
+            if len(p) > 0:
+                subd = p[0]
+                if subd[0] == "/":
+                    d = subd
+                elif subd[0:2] == "./":
+                    d = d + subd[1:]
+                else:
+                    d = d + "/" + subd
+
+            if os.path.isdir(d):
+                print(f"{d}: ")
+
+                for dir in os.listdir(d):
+                    prefix = "  - "
+                    if os.path.isdir(d + '/' + dir):
+                        prefix = "  + "
+                    print(prefix + str(dir))
+            else:
+                print(f"Invalid directory `{d}`!")
+            #TODO: help
+        elif c == "cdl":
+            if len(p) > 1:
+                    #TODO: help
+                    pass
+            else:
+                d = os.environ['HOME']
+
+                if len(p) == 1 and p[0] != "~":
+                    d = os.getcwd() + "/" + p[0]
+
+                if os.path.isdir(d):
+                    os.chdir(d)
+                    print(f"Working directory now `{d}`.")
+        elif c == "pwdl":
+            if len(p) == 0:
+                d = os.getcwd()
+                print(d)
+                #TODO help
+
+        elif c == "!":
+            self.repeat = True
+        else:
+            print("Command not recognized. Command must be one of these:")
+            print('     ' + ', '.join(sorted(help.keys())))
+
+        if self.repeat == False:
+            self.history.append((self.cmd, self.params))
+
+    def call_ampy(self, param_list: list, pipe_stdout=False):
+        if pipe_stdout:
+            return subprocess.run(self.proc + param_list,
+                                  text=True,
+                                  check=True,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
+        else:
+            return subprocess.run(self.proc + param_list,
+                                  text=True,
+                                  check=True,
+                                  stderr=subprocess.PIPE)
+
+    def run(self, localfile, verbose=True):
+        if verbose: print("Checking file ...")
+        try:
+            f = open(localfile, "r")
+            f.close()
+            print("File exists.")
+            print("Querying device...")
+            result = subprocess.run(self.proc + ["run", localfile],
+                                    text=True,
+                                    check=True,
+                                    stderr=subprocess.PIPE)
+
+            if verbose: print("Script executed successfully.")
+            return result
+        except FileNotFoundError:
+            if verbose: print("File not found!")
+
 
 def print_help(cmd):
     if cmd in help.keys():
@@ -48,160 +255,33 @@ except subprocess.CalledProcessError as e:
         print()
         print("Device not found! Use dev /path/to/device to change port.")
 
-while True:
-    result = None
-    print()
-    try:
-        i = input("ampy >>> ")
-        print()
-        i = i.split(" ")
-        cmd = i[0]
-        param = i[1:]
-        if cmd in ["q", "exit", "quit"]:
-            exit("Program terminating.")
-
-        if cmd == "help":
-            try:
-                print_help(param[0])
-            except IndexError:
-                print_help("invalid")
-        elif cmd == "ls":
-            print("Querying device...")
-            result = subprocess.run(proc + ["ls"], 
-                                    stderr=subprocess.PIPE, 
-                                    text=True,
-                                    check=True)
-        elif cmd == "cat":
-            print("Querying device...")
-            result = subprocess.run(proc + ["get", param[0]], 
-                                    stdout=subprocess.PIPE, 
-                                    stderr=subprocess.PIPE, 
-                                    check=True, 
-                                    text=True)
-            more = subprocess.run(["less"], input=result.stdout, text=True)
-        elif cmd == "pull":
-            if len(param) > 0:
-                fin = param[0]
-                fout = param[-1]
-                print("Querying device...")
-                result = subprocess.run(proc + ["get", param[0]], 
-                                        stdout=subprocess.PIPE, 
-                                        check=True, 
-                                        stderr=subprocess.PIPE, 
-                                        text=True)
-                with open(fout, 'w') as f:
-                    f.write(result.stdout)
-                    print("Saved {} to computer as {}...".format(fin, fout))
-        elif cmd == "push":
-            if len(param) > 0:
-                file = param[0]
-                rename = param[-1]
-                print("Querying device...")
-                result = subprocess.run(proc + ["put", file, rename],
-                                    check=True,
-                                    text=True,
-                                    stderr=subprocess.PIPE)
-                print("Uploaded {} to device as {} ...".format(file, rename))
-        elif cmd == "reset":
-            print("Sending a soft reset signal to device...")
-            result = subprocess.run(proc + ["reset"],
-                                    check=True,
-                                    text=True,
-                                    stderr=subprocess.PIPE)
-            print("Done.")
-        elif cmd == "dev":
-            if param == []:
-                print(f"Pico port:  {proc[-1]}")
+if __name__ == "__main__":
+    prog = Program()
+    while True:
+        try:
+            prog.repl()
+        except subprocess.CalledProcessError as e:
+            if "No such file" in e.stderr:
+                print(f"File not found!" )
+            elif "rmdir" in e.stderr:
+                print("Directory not found or not a directory!")
+            elif "value for 'LOCAL'" in e.stderr:
+                print("Can't find file {} on local disk!".format(file))
+            elif "failed to access" in e.stderr:
+                print(f"Device not found at {proc[-1]}!")
             else:
-                proc = ["ampy", "--port", param[0]]
-                print(f"Changed port to: {proc[-1]}")
-        elif cmd == "mkdir":
-            if len(param) == 1:
-                dir = param[0]
-                print("Querying device...")
-                result = subprocess.run(proc + ["mkdir", dir],
-                                        check=True,
-                                        text=True,
-                                        stderr=subprocess.PIPE)
-                print("Directory created.")
-            else:
-                print("ERROR: mkdir takes exactly one argument.")
-                continue
-        elif cmd == "rm":
-            if len(param) == 1:
-                file = param[0]
-                print("Querying device...")
-                result = subprocess.run(proc + ["rm", file],
-                                        check=True,
-                                        text=True,
-                                        stderr=subprocess.PIPE)
-                print("File deleted.")
-            else:
-                print("ERROR: rm takes exactly one argument.")
-                continue
-        elif cmd == "rmdir":
-            if len(param) == 1:
-                print("WARNING: This will delete the directory and everything in it!")
-                warn = input("Continue? (y/N) >> ")
-                if warn in ["y", "yes", "Y", "YES"]:
-                    file = param[0]
-                    print("Querying device...")
-                    result = subprocess.run(proc + ["rmdir", file],
-                                            check=True,
-                                            text=True,
-                                            stderr=subprocess.PIPE)
-                    print("Directory deleted.")
-            else:
-                print("ERROR: rm takes exactly one argument.")
-                continue
-        elif cmd == "repl":
-            print("Connecting interactively to device. (Requires tio)")
-            result = subprocess.run(["tio", proc[-1]],
-                                    check=True,
-                                    stderr=subprocess.PIPE)
-        elif cmd == "run":
-            if len(param) == 1:
-                localfile = param[0]
-                print("Checking file ...")
-                try:
-                    f = open(localfile, "r")
-                    f.close()
-                    print("File exists.")
-                except FileNotFoundError:
-                    print("File not found!")
-                    continue
-                print("Querying device...")
-                result = subprocess.run(proc + ["run", localfile],
-                                        check=True,
-                                        text=True,
-                                        stderr = subprocess.PIPE)
-                print("Script executed successfully.")
-        else:
-            print("Command not recognized. Command must be one of these:")
-            print('     ' + ', '.join(sorted(help.keys())))
-    except EOFError:
-        exit("Program aborting.")
-    except KeyboardInterrupt:
-        print()
-        continue
-
-    except subprocess.CalledProcessError as e:
-
-        if "No such file" in e.stderr:
-            print(f"File not found!" )
-        elif "rmdir" in e.stderr:
-            print("Directory not found or not a directory!")
-        elif "value for 'LOCAL'" in e.stderr:
-            print("Can't find file {} on local disk!".format(file))
-        elif "failed to access" in e.stderr:
-            print(f"Device not found at {proc[-1]}!")
-        else:
-            with open(".pico.log", 'a') as f:
-                f.write("### BEGIN ENTRY ###\n")
-                f.write("Generated on: " + str(datetime.datetime.now()))
-                f.write("\n")
-                f.write(str(e.stderr))
-                f.write("### END ENTRY ###\n\n\n")
-            view = input("(Y/n) >> ")
-            if view not in ["n", "N", "no", "No", "NO"]:
-                more = subprocess.run(["less"], input=e.stderr, text=True)
+                with open(".pico.log", 'a') as f:
+                    f.write("### BEGIN ENTRY ###\n")
+                    f.write("Generated on: " + str(datetime.datetime.now()))
+                    f.write("\n")
+                    f.write(str(e.stderr))
+                    f.write("### END ENTRY ###\n\n\n")
+                print("Error occurred. Log entry created. The error may have originated from a script on your device.")
+                view = input("View error message? (Y/n) >> ")
+                if view not in ["n", "N", "no", "No", "NO"]:
+                    more = subprocess.run(["less"], input=e.stderr, text=True)
+        except EOFError:
+            exit("Got kill signal, exiting...")
+        except KeyboardInterrupt:
+            print()
+            continue
